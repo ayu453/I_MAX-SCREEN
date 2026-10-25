@@ -775,4 +775,393 @@
         function updatePlayButtonUI(isPlaying) {
             btnPlay.innerHTML = isPlaying ? 
                 '<i class="fa-solid fa-pause text-base"></i>' : 
-                '<i class="fa-solid fa-play text
+                '<i class="fa-solid fa-play text-base"></i>';
+        }
+
+        // --- 5. Realtime Dynamic Ambilight Engine ---
+        function updateDynamicAmbilight() {
+            frameCounter++;
+            if (frameCounter % 6 !== 0) return;
+            if (video.paused || video.ended || video.readyState < 2) return;
+
+            try {
+                // Downsample video frame to offscreen canvas
+                analysisCtx.drawImage(video, 0, 0, analysisCanvas.width, analysisCanvas.height);
+                const frameData = analysisCtx.getImageData(0, 0, analysisCanvas.width, analysisCanvas.height).data;
+
+                let r = 0, g = 0, b = 0;
+                const totalPixels = frameData.length / 4;
+
+                // Average color calculation
+                for (let i = 0; i < frameData.length; i += 4) {
+                    r += frameData[i];
+                    g += frameData[i + 1];
+                    b += frameData[i + 2];
+                }
+
+                r = Math.floor(r / totalPixels);
+                g = Math.floor(g / totalPixels);
+                b = Math.floor(b / totalPixels);
+
+                // Update Three.js Light color smoothly
+                const targetColor = new THREE.Color(`rgb(${r}, ${g}, ${b})`);
+                spotLight.color.lerp(targetColor, 0.1);
+                spotLight.intensity = state.lightIntensity * (state.themeMode === 'glow' ? 2.2 : 1.2);
+                if (wallGlowLeft) {
+                    wallGlowLeft.color.lerp(targetColor, 0.08);
+                    wallGlowRight.color.lerp(targetColor, 0.08);
+                    const wallIntensity = state.sideWallIntensity * (state.themeMode === 'glow' ? 3.15 : 0.92);
+                    wallGlowLeft.intensity = wallIntensity;
+                    wallGlowRight.intensity = wallIntensity;
+                }
+                aisleLights.forEach(light => { light.material.color.lerp(targetColor, 0.025); });
+
+            } catch (e) {
+                // Handle potential CORS restriction on video textures gracefully
+            }
+        }
+
+        // --- 6. UI Controls & Event Handling ---
+        function setupUIEventListeners() {
+            // Toggle Controls Panel
+            const btnToggleUI = document.getElementById('btn-toggle-ui');
+            const btnClosePanel = document.getElementById('btn-close-panel');
+
+            btnToggleUI.addEventListener('click', () => {
+                controlsPanel.classList.toggle('translate-x-0');
+                controlsPanel.classList.toggle('translate-x-full');
+            });
+
+            btnClosePanel.addEventListener('click', () => {
+                controlsPanel.classList.add('translate-x-full');
+            });
+
+            document.getElementById('btn-screenx').addEventListener('click', () => { setScreenXMode(!state.screenX); saveSettings(); });
+
+            // Portrait-first Edge Fit: frame the existing curved screen mesh as large as possible
+            // without changing its geometry or stretching the video texture.
+            document.getElementById('btn-edge-fit').addEventListener('click', () => {
+                state.edgeFit = !state.edgeFit;
+                const fitBtn = document.getElementById('btn-edge-fit');
+                fitBtn.setAttribute('aria-pressed', String(state.edgeFit));
+                fitBtn.classList.toggle('control-active', state.edgeFit);
+                if (state.edgeFit) {
+                    preFitCamera = { position: camera.position.clone(), fov: camera.fov, target: controls.target.clone() };
+                    const screenHeight = 14 * state.scale;
+                    const screenWidth = screenHeight * state.aspectRatio;
+                    const portrait = window.innerHeight >= window.innerWidth;
+                    const margin = portrait ? 1.06 : 1.12;
+                    const verticalDistance = (screenHeight * margin / 2) / Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+                    const horizontalFov = 2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * camera.aspect);
+                    const horizontalDistance = (screenWidth * margin / 2) / Math.tan(horizontalFov / 2);
+                    const distance = Math.max(verticalDistance, horizontalDistance, 8);
+                    camera.position.set(0, screenHeight / 2 - 0.5, distance);
+                    controls.target.set(0, screenHeight / 2 - 2, 0);
+                    controls.update();
+                    updateStatus('EDGE FIT · GEOMETRY PRESERVED');
+                } else {
+                    if (preFitCamera) {
+                        camera.position.copy(preFitCamera.position);
+                        camera.fov = preFitCamera.fov;
+                        camera.updateProjectionMatrix();
+                        controls.target.copy(preFitCamera.target);
+                        controls.update();
+                    }
+                    updateStatus('EDGE FIT OFF');
+                }
+            });
+
+            // Recenter Camera and viewing angles
+            document.getElementById('btn-recenter').addEventListener('click', () => {
+                camera.position.set(0, 1.5, state.curDistance);
+                camera.lookAt(0, 2, 0);
+                controls.target.set(0, 2, 0);
+                controls.update();
+            });
+            document.getElementById('btn-view-front').addEventListener('click', () => { setViewingAngle(0); saveSettings(); });
+            document.getElementById('btn-view-left').addEventListener('click', () => { setViewingAngle(-7); saveSettings(); });
+            document.getElementById('btn-view-right').addEventListener('click', () => { setViewingAngle(7); saveSettings(); });
+
+            // Fullscreen Toggle
+            document.getElementById('btn-fullscreen').addEventListener('click', () => {
+                if (!document.fullscreenElement) {
+                    if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(() => updateStatus('FULLSCREEN NOT AVAILABLE'));
+                } else {
+                    if (document.exitFullscreen) document.exitFullscreen();
+                }
+            });
+
+            // Aspect Ratio Buttons (1.43:1 vs 1.90:1)
+            document.querySelectorAll('.btn-aspect').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    document.querySelectorAll('.btn-aspect').forEach(b => {
+                        b.classList.remove('border-blue-500', 'bg-blue-600/20', 'text-blue-400');
+                        b.classList.add('border-transparent', 'text-slate-300');
+                    });
+
+                    const targetBtn = e.currentTarget;
+                    targetBtn.classList.add('border-blue-500', 'bg-blue-600/20', 'text-blue-400');
+                    targetBtn.classList.remove('border-transparent', 'text-slate-300');
+
+                    state.aspectRatio = parseFloat(targetBtn.getAttribute('data-ratio'));
+                    createIMAXScreen();
+                    saveSettings();
+                });
+            });
+
+            // Continuous signed curvature: Convex -> Flat -> Concave. Default is Concave.
+            const sliderCurvature = document.getElementById('slider-curvature');
+            function updateCurvatureLabel() {
+                const v = state.curvature;
+                const label = Math.abs(v) < 0.005 ? 'Flat' : (v < 0 ? 'Convex' : 'Concave');
+                const intensity = Math.abs(v) < 0.005 ? '' : (Math.abs(v) < 0.25 ? ' · Low' : Math.abs(v) < 0.55 ? ' · Medium' : ' · Strong');
+                document.getElementById('val-curvature').textContent = label + intensity + (Math.abs(v - 0.35) < 0.005 ? ' · Default' : '');
+            }
+            sliderCurvature.addEventListener('input', (e) => {
+                state.curvature = parseFloat(e.target.value);
+                updateCurvatureLabel();
+                createIMAXScreen();
+                saveSettings();
+            });
+
+            // Scale Slider
+            const sliderScale = document.getElementById('slider-scale');
+            sliderScale.addEventListener('input', (e) => {
+                state.scale = parseFloat(e.target.value);
+                document.getElementById('val-scale').textContent = `${Math.round(state.scale * 100)}%`;
+                createIMAXScreen();
+                saveSettings();
+            });
+
+            // FOV Slider
+            const sliderFOV = document.getElementById('slider-fov');
+            sliderFOV.addEventListener('input', (e) => {
+                state.fov = parseInt(e.target.value);
+                document.getElementById('val-fov').textContent = `${state.fov}°`;
+                camera.fov = state.fov;
+                camera.updateProjectionMatrix();
+                saveSettings();
+            });
+
+            // Light Intensity Slider
+            const sliderLight = document.getElementById('slider-light');
+            sliderLight.addEventListener('input', (e) => {
+                state.lightIntensity = parseFloat(e.target.value);
+                document.getElementById('val-light').textContent = `${Math.round(state.lightIntensity * 100)}%`;
+                saveSettings();
+            });
+
+            // Seating Presets (Front, Center, Back)
+            document.getElementById('btn-seat-front').addEventListener('click', () => {
+                setSeatingPreset(14, 55); saveSettings();
+            });
+            document.getElementById('btn-seat-center').addEventListener('click', () => {
+                setSeatingPreset(22, 65); saveSettings();
+            });
+            document.getElementById('btn-seat-back').addEventListener('click', () => {
+                setSeatingPreset(32, 75); saveSettings();
+            });
+
+            // Side-wall glow has an independent intensity control.
+            document.getElementById('slider-side-light').addEventListener('input', (e) => {
+                state.sideWallIntensity = parseFloat(e.target.value);
+                document.getElementById('val-side-light').textContent = `${Math.round(state.sideWallIntensity * 100)}%`;
+                if (wallGlowLeft) { wallGlowLeft.intensity = state.sideWallIntensity * (state.themeMode === 'glow' ? 3.15 : 0.92); wallGlowRight.intensity = wallGlowLeft.intensity; }
+                saveSettings();
+            });
+
+            // Reset configurable cinema settings without interrupting or replacing the loaded movie.
+            document.getElementById('btn-reset-settings').addEventListener('click', () => {
+                state.aspectRatio = 1.43; state.curvature = 0.35; state.sideWallIntensity = 0.35; state.edgeFit = false;
+                document.getElementById('btn-edge-fit').setAttribute('aria-pressed', 'false'); document.getElementById('btn-edge-fit').classList.remove('control-active'); preFitCamera = null;
+                state.scale = 1.0; state.fov = 65; state.lightIntensity = 0.8; state.themeMode = 'dark'; state.quality = 'medium';
+                document.querySelectorAll('.btn-aspect').forEach(b => {
+                    const active = parseFloat(b.dataset.ratio) === 1.43;
+                    b.classList.toggle('border-blue-500', active); b.classList.toggle('bg-blue-600/20', active); b.classList.toggle('text-blue-400', active);
+                    b.classList.toggle('border-transparent', !active); b.classList.toggle('text-slate-300', !active);
+                });
+                document.getElementById('slider-curvature').value = state.curvature; updateCurvatureLabel();
+                document.getElementById('slider-scale').value = 1; document.getElementById('val-scale').textContent = '100%';
+                document.getElementById('slider-fov').value = 65; document.getElementById('val-fov').textContent = '65°';
+                document.getElementById('slider-light').value = 0.8; document.getElementById('val-light').textContent = '80%';
+                document.getElementById('slider-side-light').value = 0.35; document.getElementById('val-side-light').textContent = '35%';
+                document.getElementById('select-quality').value = 'medium'; applyGraphicsQuality();
+                camera.fov = 65; camera.updateProjectionMatrix();
+                scene.fog.density = 0.018;
+                document.getElementById('btn-theme-dark').className = 'glass-panel py-1.5 px-2 rounded-lg text-xs border border-blue-500 text-blue-400 font-medium';
+                document.getElementById('btn-theme-glow').className = 'glass-panel py-1.5 px-2 rounded-lg text-xs border border-transparent text-slate-400 hover:text-white';
+                setSeatingPreset(22, 65); saveSettings();
+                if (wallGlowLeft) { wallGlowLeft.intensity = state.sideWallIntensity * 0.92; wallGlowRight.intensity = state.sideWallIntensity * 0.92; }
+                if (state.screenX) setScreenXMode(false); else createIMAXScreen();
+                saveSettings();
+                updateStatus('SETTINGS RESET · IMAX');
+            });
+
+            // Graphics quality and manual settings save.
+            document.getElementById('select-quality').addEventListener('change', (e) => {
+                state.quality = e.target.value;
+                applyGraphicsQuality();
+                saveSettings();
+                updateStatus('QUALITY · ' + state.quality.toUpperCase());
+            });
+            document.getElementById('btn-save-settings').addEventListener('click', () => {
+                saveSettings();
+                updateStatus('SETTINGS SAVED');
+            });
+
+            // Theme Atmosphere Modes
+            document.getElementById('btn-theme-dark').addEventListener('click', (e) => {
+                state.themeMode = 'dark';
+                scene.fog.density = 0.018;
+                if (wallGlowLeft) { wallGlowLeft.intensity = state.sideWallIntensity * 0.92; wallGlowRight.intensity = state.sideWallIntensity * 0.92; }
+                e.currentTarget.className = "glass-panel py-1.5 px-2 rounded-lg text-xs border border-blue-500 text-blue-400 font-medium";
+                document.getElementById('btn-theme-glow').className = "glass-panel py-1.5 px-2 rounded-lg text-xs border border-transparent text-slate-400 hover:text-white";
+                saveSettings();
+            });
+
+            document.getElementById('btn-theme-glow').addEventListener('click', (e) => {
+                state.themeMode = 'glow';
+                scene.fog.density = 0.008; // Less fog, more wall glow
+                if (wallGlowLeft) { wallGlowLeft.intensity = state.sideWallIntensity * 3.15; wallGlowRight.intensity = state.sideWallIntensity * 3.15; }
+                e.currentTarget.className = "glass-panel py-1.5 px-2 rounded-lg text-xs border border-blue-500 text-blue-400 font-medium";
+                document.getElementById('btn-theme-dark').className = "glass-panel py-1.5 px-2 rounded-lg text-xs border border-transparent text-slate-400 hover:text-white";
+                saveSettings();
+            });
+        }
+
+        const SETTINGS_KEY = 'imaxScreenXSettings_v24';
+        function restoreSavedSettings() {
+            try {
+                const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null');
+                if (!saved || typeof saved !== 'object') return;
+                if ([1.43, 1.90].includes(Number(saved.aspectRatio))) state.aspectRatio = Number(saved.aspectRatio);
+                if (Number.isFinite(Number(saved.curvature))) state.curvature = Math.max(-0.8, Math.min(0.8, Number(saved.curvature)));
+                if (Number.isFinite(Number(saved.sideWallIntensity))) state.sideWallIntensity = Math.max(0, Math.min(1.5, Number(saved.sideWallIntensity)));
+                if (Number.isFinite(Number(saved.scale))) state.scale = Math.max(0.7, Math.min(1.5, Number(saved.scale)));
+                if (Number.isFinite(Number(saved.fov))) state.fov = Math.max(45, Math.min(95, Number(saved.fov)));
+                if (Number.isFinite(Number(saved.lightIntensity))) state.lightIntensity = Math.max(0, Math.min(2, Number(saved.lightIntensity)));
+                if (['dark','glow'].includes(saved.themeMode)) state.themeMode = saved.themeMode;
+                if (['low','medium','high'].includes(saved.quality)) state.quality = saved.quality;
+                state.screenX = Boolean(saved.screenX);
+                if (Number.isFinite(Number(saved.curDistance))) state.curDistance = Math.max(14, Math.min(32, Number(saved.curDistance)));
+            } catch (_) { /* Storage may be unavailable in private/restricted contexts. */ }
+        }
+
+        function saveSettings() {
+            try {
+                localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+                    aspectRatio: state.aspectRatio, curvature: state.curvature,
+                    sideWallIntensity: state.sideWallIntensity, scale: state.scale,
+                    fov: state.fov, lightIntensity: state.lightIntensity,
+                    themeMode: state.themeMode, quality: state.quality,
+                    screenX: state.screenX, curDistance: state.curDistance
+                }));
+            } catch (_) { /* Keep simulator usable if storage is blocked. */ }
+        }
+
+        function syncSettingsUI() {
+            document.getElementById('slider-curvature').value = state.curvature;
+            document.getElementById('slider-scale').value = state.scale;
+            document.getElementById('slider-fov').value = state.fov;
+            document.getElementById('slider-light').value = state.lightIntensity;
+            document.getElementById('slider-side-light').value = state.sideWallIntensity;
+            document.getElementById('select-quality').value = state.quality;
+            document.getElementById('val-curvature').textContent = Math.abs(state.curvature) < 0.005 ? 'Flat' : (state.curvature > 0 ? 'Concave' : 'Convex');
+            document.getElementById('val-scale').textContent = `${Math.round(state.scale * 100)}%`;
+            document.getElementById('val-fov').textContent = `${state.fov}°`;
+            document.getElementById('val-light').textContent = `${Math.round(state.lightIntensity * 100)}%`;
+            document.getElementById('val-side-light').textContent = `${Math.round(state.sideWallIntensity * 100)}%`;
+            document.querySelectorAll('.btn-aspect').forEach(b => {
+                const active = Math.abs(parseFloat(b.dataset.ratio) - state.aspectRatio) < 0.001;
+                b.classList.toggle('border-blue-500', active); b.classList.toggle('bg-blue-600/20', active); b.classList.toggle('text-blue-400', active);
+                b.classList.toggle('border-transparent', !active); b.classList.toggle('text-slate-300', !active);
+            });
+        }
+
+        function syncThemeUI() {
+            const glow = state.themeMode === 'glow';
+            scene.fog.density = glow ? 0.008 : 0.018;
+            if (wallGlowLeft) {
+                wallGlowLeft.intensity = state.sideWallIntensity * (glow ? 3.15 : 0.92);
+                wallGlowRight.intensity = wallGlowLeft.intensity;
+            }
+            document.getElementById('btn-theme-dark').className = glow
+                ? 'glass-panel py-1.5 px-2 rounded-lg text-xs border border-transparent text-slate-400 hover:text-white'
+                : 'glass-panel py-1.5 px-2 rounded-lg text-xs border border-blue-500 text-blue-400 font-medium';
+            document.getElementById('btn-theme-glow').className = glow
+                ? 'glass-panel py-1.5 px-2 rounded-lg text-xs border border-blue-500 text-blue-400 font-medium'
+                : 'glass-panel py-1.5 px-2 rounded-lg text-xs border border-transparent text-slate-400 hover:text-white';
+        }
+
+        function getQualityPixelRatio(isMobile) {
+            const dpr = window.devicePixelRatio || 1;
+            if (state.quality === 'low') return Math.min(dpr, 0.85);
+            if (state.quality === 'high') return Math.min(dpr, isMobile ? 1.5 : 2);
+            return Math.min(dpr, isMobile ? 1.15 : 1.5);
+        }
+
+        function applyGraphicsQuality() {
+            if (!renderer) return;
+            const mobile = /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent) || window.innerWidth < 700;
+            renderer.setPixelRatio(getQualityPixelRatio(mobile));
+            renderer.shadowMap.enabled = state.quality === 'high' && !mobile;
+            renderer.shadowMap.needsUpdate = true;
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function setViewingAngle(xOffset) {
+            camera.position.set(xOffset, 1.5, state.curDistance);
+            controls.target.set(xOffset * 0.25, 2, 0);
+            camera.lookAt(controls.target);
+            controls.update();
+        }
+
+        function setSeatingPreset(distance, fov) {
+            state.curDistance = distance;
+            state.fov = fov;
+            
+            camera.position.set(0, 1.5, distance);
+            camera.fov = fov;
+            camera.updateProjectionMatrix();
+
+            document.getElementById('slider-fov').value = fov;
+            document.getElementById('val-fov').textContent = `${fov}°`;
+            controls.target.set(0, 2, 0);
+            controls.update();
+        }
+
+        function formatTime(seconds) {
+            const m = Math.floor(seconds / 60);
+            const s = Math.floor(seconds % 60);
+            return `${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}`;
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            const mobile = window.innerWidth < 700;
+            renderer.setPixelRatio(getQualityPixelRatio(mobile));
+        }
+
+        window.addEventListener('beforeunload', () => {
+            if (currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
+        });
+
+        // --- 7. Animation Loop ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // Update OrbitControls
+            controls.update();
+
+            // Update adaptive, video-reactive wall and screen lighting
+            updateDynamicAmbilight();
+
+            // Render 3D Scene
+            renderer.render(scene, camera);
+        }
+    </script>
+</body>
+</html>
+            
