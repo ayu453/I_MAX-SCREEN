@@ -1,1 +1,559 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>IMAX + ScreenX Immersive Cinema Simulator</title>
+    <!-- Tailwind CSS for UI -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Three.js Library -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- OrbitControls for Three.js -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #050508;
+            font-family: 'Inter', sans-serif;
+            user-select: none;
+            -webkit-user-select: none;
+        }
 
+        #canvas-container {
+            width: 100%;
+            height: 100%;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+
+        /* Custom Scrollbar */
+        .custom-scrollbar::-webkit-scrollbar { width: 5px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: rgba(15, 23, 42, 0.6); }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(59, 130, 246, 0.5); border-radius: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(59, 130, 246, 0.8); }
+
+        /* Range Input Styling */
+        input[type=range] {
+            -webkit-appearance: none;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 6px;
+            height: 6px;
+        }
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            height: 16px;
+            width: 16px;
+            border-radius: 50%;
+            background: #3b82f6;
+            cursor: pointer;
+            box-shadow: 0 0 10px rgba(59, 130, 246, 0.8);
+            transition: transform 0.1s ease;
+        }
+        input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.2); }
+
+        .glass-panel {
+            background: rgba(10, 15, 26, 0.75);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        #status-pill { max-width: 42vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .control-active { border-color: rgba(59,130,246,.9) !important; background: rgba(37,99,235,.24) !important; color: #93c5fd !important; }
+
+        @media (max-width: 640px) {
+            #controls-panel { width: min(88vw, 340px); right: 8px; top: 68px; max-height: calc(100vh - 168px); padding: 14px; gap: 14px; }
+            #player-bar { bottom: 8px; width: calc(100% - 16px); padding: 9px; }
+        }
+
+        /* Landscape phone/tablet layout */
+        @media (orientation: landscape) and (max-height: 600px) {
+            header { padding: 8px !important; }
+            #controls-panel { top: 54px; right: 8px; width: min(300px, 42vw); max-height: calc(100dvh - 112px); padding: 11px; }
+            #player-bar { left: 8px; transform: none; bottom: 8px; width: min(68vw, 760px); max-width: calc(100vw - 16px); padding: 7px 10px; }
+        }
+    </style>
+</head>
+<body class="text-slate-200">
+
+    <!-- WebGL Canvas Container -->
+    <div id="canvas-container"></div>
+
+    <!-- Hidden Video & Canvas for Dynamic Ambilight -->
+    <video id="imax-video" crossorigin="anonymous" loop playsinline class="hidden"></video>
+    <canvas id="analysis-canvas" class="hidden" width="32" height="18"></canvas>
+
+    <!-- Top Header -->
+    <header class="absolute top-0 left-0 w-full p-4 z-10 flex justify-between items-center pointer-events-none">
+        <div class="flex items-center gap-3 pointer-events-auto">
+            <div class="bg-blue-600 text-white p-2 rounded-xl shadow-lg shadow-blue-500/30 flex items-center justify-center">
+                <i class="fa-solid fa-film text-xl"></i>
+            </div>
+            <div>
+                <h1 class="font-bold text-lg leading-tight tracking-wide text-white">IMAX 3D Simulator</h1>
+                <p class="text-xs text-slate-400">IMAX + ScreenX Engine v3.1</p>
+            </div>
+        </div>
+
+        <!-- Right Quick Controls -->
+        <div class="flex items-center gap-2 pointer-events-auto">
+            <span id="status-pill" class="glass-panel rounded-lg px-2 py-2 text-[10px] sm:text-xs text-emerald-300">READY · IMAX</span>
+            <button id="btn-toggle-ui" class="glass-panel px-3 py-2 rounded-xl text-sm font-medium hover:bg-slate-800/80 transition flex items-center gap-2 text-slate-300">
+                <i class="fa-solid fa-sliders text-blue-400"></i>
+                <span class="hidden sm:inline">Controls</span>
+            </button>
+            <button id="btn-recenter" class="glass-panel p-2.5 rounded-xl text-slate-300 hover:text-white hover:bg-slate-800/80 transition" title="Recenter View">
+                <i class="fa-solid fa-crosshairs"></i>
+            </button>
+            <button id="btn-fullscreen" class="glass-panel p-2.5 rounded-xl text-slate-300 hover:text-white hover:bg-slate-800/80 transition" title="Toggle Fullscreen">
+                <i class="fa-solid fa-expand"></i>
+            </button>
+        </div>
+    </header>
+
+    <!-- Bottom Player Bar -->
+    <div id="player-bar" class="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 w-[92%] max-w-2xl glass-panel rounded-2xl p-3 shadow-2xl flex flex-col gap-2 border border-slate-700/50">
+        <!-- Progress Bar -->
+        <div class="flex items-center gap-3 px-1">
+            <span id="time-current" class="text-xs font-mono text-slate-400 min-w-[38px]">00:00</span>
+            <input id="seek-bar" type="range" min="0" max="100" value="0" class="w-full cursor-pointer">
+            <span id="time-total" class="text-xs font-mono text-slate-400 min-w-[38px]">00:00</span>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="flex items-center justify-between px-1 pt-1">
+            <div class="flex items-center gap-2">
+                <button id="btn-play" class="w-10 h-10 rounded-xl bg-blue-600 hover:bg-blue-500 text-white flex items-center justify-center transition shadow-lg shadow-blue-600/30">
+                    <i class="fa-solid fa-play text-base"></i>
+                </button>
+                <button id="btn-mute" class="w-10 h-10 rounded-xl glass-panel text-slate-300 hover:text-white flex items-center justify-center transition" title="Mute / Unmute">
+                    <i class="fa-solid fa-volume-high"></i>
+                </button>
+                <button id="btn-restart" class="w-10 h-10 rounded-xl glass-panel text-slate-300 hover:text-white flex items-center justify-center transition" title="Restart movie">
+                    <i class="fa-solid fa-rotate-left"></i>
+                </button>
+                <input id="volume-bar" type="range" min="0" max="1" step="0.05" value="0.8" class="w-20 hidden sm:block">
+            </div>
+
+            <!-- Upload Custom File -->
+            <div class="flex items-center gap-2">
+                <label for="video-file-input" class="cursor-pointer glass-panel px-3 py-2 rounded-xl text-xs font-medium hover:bg-slate-800 text-slate-300 transition flex items-center gap-2 border border-blue-500/30">
+                    <i class="fa-solid fa-upload text-blue-400"></i>
+                    <span class="hidden sm:inline">Upload Video</span>
+                </label>
+                <input type="file" id="video-file-input" accept="video/*" class="hidden">
+            </div>
+        </div>
+    </div>
+
+    <!-- Side Settings Control Panel -->
+    <aside id="controls-panel" class="absolute top-20 right-4 z-20 w-80 max-h-[calc(100vh-120px)] glass-panel rounded-2xl p-5 overflow-y-auto custom-scrollbar flex flex-col gap-5 border border-slate-700/60 transition-all duration-300 transform translate-x-0">
+        
+        <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+            <h2 class="font-bold text-sm tracking-wide text-white flex items-center gap-2">
+                <i class="fa-solid fa-sliders text-blue-400"></i> Theater Configuration
+            </h2>
+            <button id="btn-close-panel" class="text-slate-400 hover:text-white text-lg">
+                <i class="fa-solid fa-xmark"></i>
+            </button>
+        </div>
+
+        <!-- Media Stream / Direct URL Input -->
+        <div class="flex flex-col gap-2 rounded-xl border border-blue-500/20 bg-blue-500/5 p-3">
+            <label class="text-xs font-semibold text-white">Direct Video URL</label>
+            <div class="flex gap-2">
+                <input id="video-url-input" type="url" placeholder="Paste MP4 / WebM URL..." class="w-full glass-panel px-3 py-1.5 rounded-lg text-xs text-white bg-slate-900/80 border border-slate-700 focus:outline-none focus:border-blue-500">
+                <button id="btn-load-url" class="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded-lg text-xs text-white font-medium transition">Load</button>
+            </div>
+        </div>
+
+        <!-- 1. Screen Aspect Ratio Selector -->
+        <div class="flex flex-col gap-2">
+            <label class="text-xs font-medium text-slate-400">IMAX Aspect Ratio</label>
+            <div class="grid grid-cols-2 gap-2">
+                <button data-ratio="1.43" class="btn-aspect glass-panel py-2 px-3 rounded-xl text-xs font-semibold text-center border border-blue-500 bg-blue-600/20 text-blue-400 transition">
+                    1.43:1 <span class="block text-[10px] font-normal text-slate-400">Grand IMAX</span>
+                </button>
+                <button data-ratio="1.90" class="btn-aspect glass-panel py-2 px-3 rounded-xl text-xs font-semibold text-center border border-transparent text-slate-300 transition">
+                    1.90:1 <span class="block text-[10px] font-normal text-slate-400">Digital IMAX</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- ScreenX Mode -->
+        <div class="flex flex-col gap-2 rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-3">
+            <div class="flex items-center justify-between">
+                <div>
+                    <p class="text-xs font-semibold text-white">Cinema Projection Mode</p>
+                    <p id="mode-description" class="text-[10px] text-slate-400">IMAX Only</p>
+                </div>
+                <button id="btn-screenx" class="glass-panel rounded-lg px-3 py-2 text-xs font-semibold text-slate-300">IMAX ONLY</button>
+            </div>
+        </div>
+
+        <!-- Curvature Control -->
+        <div class="flex flex-col gap-2 rounded-xl border border-violet-500/20 bg-violet-500/5 p-3">
+            <div class="flex items-center justify-between gap-2">
+                <p class="text-xs font-semibold text-white">Screen Curvature</p>
+                <span id="val-curvature" class="font-mono text-blue-400 text-xs">Concave</span>
+            </div>
+            <input id="slider-curvature" type="range" min="-0.8" max="0.8" step="0.01" value="0.35">
+        </div>
+
+        <!-- Seating Presets -->
+        <div class="flex flex-col gap-2">
+            <label class="text-xs font-medium text-slate-400">Seating Position Preset</label>
+            <div class="grid grid-cols-3 gap-1.5">
+                <button id="btn-seat-front" class="glass-panel py-1.5 rounded-lg text-xs hover:bg-slate-800 text-slate-300">Front</button>
+                <button id="btn-seat-center" class="glass-panel py-1.5 rounded-lg text-xs bg-blue-600/30 border border-blue-500 text-blue-300 font-semibold">Center</button>
+                <button id="btn-seat-back" class="glass-panel py-1.5 rounded-lg text-xs hover:bg-slate-800 text-slate-300">Back</button>
+            </div>
+        </div>
+
+    </aside>
+
+    <!-- Main Simulator Script -->
+    <script>
+        const state = {
+            aspectRatio: 1.43,
+            curvature: 0.35,
+            sideWallIntensity: 0.35,
+            scale: 1.0,
+            fov: 65,
+            lightIntensity: 0.8,
+            themeMode: 'dark',
+            curDistance: 22,
+            screenX: false,
+            quality: 'medium'
+        };
+
+        let scene, camera, renderer, controls;
+        let screenMesh, screenGeometry, screenMaterial;
+        let screenXGroup, screenXMaterials = [];
+        let wallGlowLeft, wallGlowRight, aisleLights = [];
+        let frameCounter = 0;
+        let currentObjectUrl = null;
+        let videoTexture, ambientLight, spotLight;
+
+        const video = document.getElementById('imax-video');
+        const analysisCanvas = document.getElementById('analysis-canvas');
+        const analysisCtx = analysisCanvas.getContext('2d', { willReadFrequently: true });
+        const container = document.getElementById('canvas-container');
+
+        const btnPlay = document.getElementById('btn-play');
+        const btnMute = document.getElementById('btn-mute');
+        const seekBar = document.getElementById('seek-bar');
+        const volumeBar = document.getElementById('volume-bar');
+        const timeCurrent = document.getElementById('time-current');
+        const timeTotal = document.getElementById('time-total');
+
+        window.addEventListener('DOMContentLoaded', () => {
+            initThreeJS();
+            initTheaterEnvironment();
+            createIMAXScreen();
+            initVideoPlayer();
+            setupMediaSessionAPI();
+            setupKeyboardHotkeys();
+            setupUIEventListeners();
+            animate();
+        });
+
+        function initThreeJS() {
+            scene = new THREE.Scene();
+            scene.fog = new THREE.FogExp2(0x05070c, 0.018);
+
+            camera = new THREE.PerspectiveCamera(state.fov, window.innerWidth / window.innerHeight, 0.1, 200);
+            camera.position.set(0, 1.5, state.curDistance);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+            renderer.outputEncoding = THREE.sRGBEncoding;
+            renderer.toneMapping = THREE.ACESFilmicToneMapping;
+            container.appendChild(renderer.domElement);
+
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.maxPolarAngle = Math.PI / 2 + 0.05;
+            controls.target.set(0, 2, 0);
+
+            window.addEventListener('resize', onWindowResize);
+        }
+
+        function initTheaterEnvironment() {
+            ambientLight = new THREE.AmbientLight(0x1a202c, 0.4);
+            scene.add(ambientLight);
+
+            spotLight = new THREE.PointLight(0x3b82f6, 1.2, 50, 1.5);
+            spotLight.position.set(0, 5, 2);
+            scene.add(spotLight);
+
+            const wallMat = new THREE.MeshStandardMaterial({ color: 0x0c1017, roughness: 0.85 });
+            const floorMat = new THREE.MeshStandardMaterial({ color: 0x070a0f, roughness: 0.6 });
+
+            const backWall = new THREE.Mesh(new THREE.PlaneGeometry(60, 35), wallMat);
+            backWall.position.set(0, 12.5, -5);
+            scene.add(backWall);
+
+            const floor = new THREE.Mesh(new THREE.PlaneGeometry(60, 70), floorMat);
+            floor.rotation.x = -Math.PI / 2;
+            floor.position.set(0, -5, 30);
+            scene.add(floor);
+
+            wallGlowLeft = new THREE.PointLight(0x2563eb, 0.4, 24, 2);
+            wallGlowRight = new THREE.PointLight(0x2563eb, 0.4, 24, 2);
+            wallGlowLeft.position.set(-20, 8, 4); wallGlowRight.position.set(20, 8, 4);
+            scene.add(wallGlowLeft, wallGlowRight);
+        }
+
+        function createIMAXScreen() {
+            if (screenMesh) scene.remove(screenMesh);
+            if (videoTexture) videoTexture.dispose();
+            if (screenXGroup) scene.remove(screenXGroup);
+
+            const screenHeight = 14 * state.scale;
+            const screenWidth = screenHeight * state.aspectRatio;
+
+            screenGeometry = new THREE.PlaneGeometry(screenWidth, screenHeight, 96, 1);
+            const pos = screenGeometry.attributes.position;
+            const sagitta = Math.abs(state.curvature) * 3.2;
+            const curveSign = state.curvature > 0 ? 1 : -1;
+
+            for (let i = 0; i < pos.count; i++) {
+                const normX = pos.getX(i) / (screenWidth / 2);
+                pos.setZ(i, Math.abs(state.curvature) < 0.005 ? 0 : curveSign * sagitta * normX * normX);
+            }
+            screenGeometry.computeVertexNormals();
+
+            videoTexture = new THREE.VideoTexture(video);
+            videoTexture.minFilter = THREE.LinearFilter;
+            videoTexture.magFilter = THREE.LinearFilter;
+
+            if (state.screenX) { videoTexture.repeat.set(0.5, 1); videoTexture.offset.set(0.25, 0); }
+
+            screenMaterial = new THREE.MeshBasicMaterial({ map: videoTexture, side: THREE.DoubleSide, toneMapped: false });
+            screenMesh = new THREE.Mesh(screenGeometry, screenMaterial);
+            screenMesh.position.set(0, screenHeight / 2 - 2, 0);
+            scene.add(screenMesh);
+
+            if (state.screenX) createScreenXPanels(screenWidth, screenHeight);
+        }
+
+        function createScreenXPanels(screenWidth, screenHeight) {
+            screenXGroup = new THREE.Group();
+            const panelWidth = screenWidth * 0.58;
+            const panelHeight = screenHeight * 0.90;
+            const angle = 0.58;
+
+            [-1, 1].forEach(side => {
+                const geo = new THREE.PlaneGeometry(panelWidth, panelHeight, 32, 1);
+                const tex = videoTexture.clone();
+                tex.needsUpdate = true;
+                tex.repeat.set(0.25, 1);
+                tex.offset.set(side < 0 ? 0 : 0.75, 0);
+
+                const mat = new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, toneMapped: false });
+                const panel = new THREE.Mesh(geo, mat);
+                panel.position.set(side * (screenWidth / 2 + panelWidth * 0.40), screenHeight / 2 - 2, -0.35);
+                panel.rotation.y = side < 0 ? angle : -angle;
+                screenXGroup.add(panel);
+            });
+            scene.add(screenXGroup);
+        }
+
+        function initVideoPlayer() {
+            // Reliable default open-source video URL
+            video.src = 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4';
+            video.volume = 0.8;
+
+            video.addEventListener('loadedmetadata', () => {
+                timeTotal.textContent = formatTime(video.duration || 0);
+                updateMediaSessionState();
+            });
+
+            btnPlay.addEventListener('click', togglePlay);
+            video.addEventListener('play', () => updatePlayUI(true));
+            video.addEventListener('pause', () => updatePlayUI(false));
+
+            video.addEventListener('timeupdate', () => {
+                if (!isNaN(video.duration)) {
+                    seekBar.value = (video.currentTime / video.duration) * 100;
+                    timeCurrent.textContent = formatTime(video.currentTime);
+                }
+            });
+
+            seekBar.addEventListener('input', () => {
+                if (video.duration) video.currentTime = (seekBar.value / 100) * video.duration;
+            });
+
+            btnMute.addEventListener('click', () => {
+                video.muted = !video.muted;
+                btnMute.innerHTML = video.muted ? '<i class="fa-solid fa-volume-xmark text-red-400"></i>' : '<i class="fa-solid fa-volume-high"></i>';
+            });
+
+            volumeBar.addEventListener('input', () => {
+video.volume = volumeBar.value;
+video.muted = (video.volume === 0);
+});
+document.getElementById('video-file-input').addEventListener('change', (e) => {
+const file = e.target.files[0];
+if (file) {
+if (currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
+currentObjectUrl = URL.createObjectURL(file);
+video.src = currentObjectUrl;
+video.play();
+}
+});
+document.getElementById('btn-load-url').addEventListener('click', () => {
+const url = document.getElementById('video-url-input').value.trim();
+if (url) {
+video.src = url;
+video.play().catch(err => alert("Direct stream URL load failed. Please ensure CORS header access."));
+}
+});
+}
+/* Hardware Media Keys (Media Session API) */
+function setupMediaSessionAPI() {
+if ('mediaSession' in navigator) {
+navigator.mediaSession.metadata = new MediaMetadata({
+title: 'IMAX Cinema Simulator',
+artist: 'Virtual Theater',
+album: 'ScreenX 3D Engine'
+});
+navigator.mediaSession.setActionHandler('play', () => { video.play(); });
+navigator.mediaSession.setActionHandler('pause', () => { video.pause(); });
+navigator.mediaSession.setActionHandler('seekbackward', (details) => {
+video.currentTime = Math.max(video.currentTime - (details.seekOffset || 10), 0);
+});
+navigator.mediaSession.setActionHandler('seekforward', (details) => {
+video.currentTime = Math.min(video.currentTime + (details.seekOffset || 10), video.duration || 0);
+});
+navigator.mediaSession.setActionHandler('previoustrack', () => { video.currentTime = 0; });
+}
+}
+function updateMediaSessionState() {
+if ('mediaSession' in navigator && !isNaN(video.duration)) {
+try {
+navigator.mediaSession.setPositionState({
+duration: video.duration,
+playbackRate: video.playbackRate,
+position: video.currentTime
+});
+} catch (_) {}
+}
+}
+/* Keyboard Hotkeys */
+function setupKeyboardHotkeys() {
+window.addEventListener('keydown', (e) => {
+if (['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
+switch(e.code) {
+case 'Space':
+case 'KeyK':
+e.preventDefault();
+togglePlay();
+break;
+case 'KeyM':
+btnMute.click();
+break;
+case 'KeyF':
+document.getElementById('btn-fullscreen').click();
+break;
+case 'ArrowLeft':
+e.preventDefault();
+video.currentTime = Math.max(video.currentTime - 5, 0);
+break;
+case 'ArrowRight':
+e.preventDefault();
+video.currentTime = Math.min(video.currentTime + 5, video.duration || 0);
+break;
+case 'ArrowUp':
+e.preventDefault();
+video.volume = Math.min(video.volume + 0.1, 1);
+volumeBar.value = video.volume;
+break;
+case 'ArrowDown':
+e.preventDefault();
+video.volume = Math.max(video.volume - 0.1, 0);
+volumeBar.value = video.volume;
+break;
+}
+});
+}
+function togglePlay() {
+if (video.paused) video.play();
+else video.pause();
+}
+function updatePlayUI(isPlaying) {
+btnPlay.innerHTML = isPlaying ? '<i class="fa-solid fa-pause text-base"></i>' : '<i class="fa-solid fa-play text-base"></i>';
+if ('mediaSession' in navigator) navigator.mediaSession.playbackState = isPlaying ? "playing" : "paused";
+}
+function setupUIEventListeners() {
+document.getElementById('btn-toggle-ui').addEventListener('click', () => {
+document.getElementById('controls-panel').classList.toggle('translate-x-full');
+});
+document.getElementById('btn-close-panel').addEventListener('click', () => {
+document.getElementById('controls-panel').classList.add('translate-x-full');
+});
+document.getElementById('btn-fullscreen').addEventListener('click', () => {
+if (!document.fullscreenElement) {
+document.documentElement.requestFullscreen().catch(() => {});
+} else {
+document.exitFullscreen().catch(() => {});
+}
+});
+document.getElementById('btn-ratio-143').addEventListener('click', (e) => {
+state.aspectRatio = 1.43;
+createIMAXScreen();
+});
+document.getElementById('btn-ratio-190').addEventListener('click', (e) => {
+state.aspectRatio = 1.90;
+createIMAXScreen();
+});
+document.getElementById('btn-screenx').addEventListener('click', (e) => {
+state.screenX = !state.screenX;
+e.target.textContent = state.screenX ? 'DISABLE SCREENX' : 'ENABLE SCREENX';
+document.getElementById('mode-description').textContent = state.screenX ? 'IMAX + 270° ScreenX' : 'IMAX Standard';
+createIMAXScreen();
+});
+document.getElementById('slider-curvature').addEventListener('input', (e) => {
+state.curvature = parseFloat(e.target.value);
+createIMAXScreen();
+});
+document.getElementById('btn-seat-front').addEventListener('click', () => setSeat(14, 55));
+document.getElementById('btn-seat-center').addEventListener('click', () => setSeat(22, 65));
+document.getElementById('btn-seat-back').addEventListener('click', () => setSeat(32, 75));
+}
+function setSeat(dist, fov) {
+state.curDistance = dist;
+camera.position.set(0, 1.5, dist);
+camera.fov = fov;
+camera.updateProjectionMatrix();
+}
+function formatTime(sec) {
+const m = Math.floor(sec / 60);
+const s = Math.floor(sec % 60);
+return ${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s};
+}
+function onWindowResize() {
+camera.aspect = window.innerWidth / window.innerHeight;
+camera.updateProjectionMatrix();
+renderer.setSize(window.innerWidth, window.innerHeight);
+}
+function animate() {
+requestAnimationFrame(animate);
+controls.update();
+renderer.render(scene, camera);
+}
+</script>
+</body>
+</html>
